@@ -86,7 +86,12 @@ func configFile() string {
 }
 
 func LoadConfig() *Config {
-	return coreConfig.LoadConfig[Config](configFile())
+	cfg, err := coreConfig.NewConfig[Config](configFile())
+	if err != nil {
+		return &Config{}
+	}
+
+	return cfg
 }
 
 func LoadConfigFromFile(configFilename string) *Config {
