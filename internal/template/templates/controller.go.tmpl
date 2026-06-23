@@ -1,0 +1,25 @@
+// {{ .File.Disclaimer }}
+
+package {{ .File.Package }}
+
+{{- if .File.Imports }}
+import (
+{{- range .File.Imports }}
+	{{ if .Alias }}{{ .Alias }} {{ end }}{{ quote .Path }}
+{{- end }}
+)
+{{- end }}
+
+{{ range .RequestStructs }}
+type {{ .Name }} struct {
+{{- range .Fields }}
+	{{ .Name }} {{ .Type }}
+{{- end }}
+}
+
+{{ end -}}
+type Controller interface {
+{{- range .Methods }}
+	{{ .Name }}(ctx context.Context{{ if .ParamsType }}, params {{ .ParamsType }}{{ end }}) ({{ .ResponseType }}, error)
+{{- end }}
+}

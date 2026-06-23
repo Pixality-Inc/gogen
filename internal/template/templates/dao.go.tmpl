@@ -1,0 +1,61 @@
+package {{ .File.Package }}
+
+{{- if .File.Imports }}
+import (
+{{- range .File.Imports }}
+	{{ if .Alias }}{{ .Alias }} {{ end }}{{ quote .Path }}
+{{- end }}
+)
+{{- end }}
+
+//nolint:iface
+type {{ .ModelName }} interface {
+	{{ .GetterName }}
+}
+
+type {{ .DaoName }} interface {
+	Create(ctx context.Context, queryRunner postgres.QueryRunner, a {{ .ModelName }}) error
+	CreateBatch(ctx context.Context, queryRunner postgres.QueryRunner, arr []{{ .ModelName }}) error
+	List(ctx context.Context, queryRunner postgres.QueryRunner) ([]{{ .ModelName }}, error)
+	GetById(ctx context.Context, queryRunner postgres.QueryRunner, id {{ .GetByIDType }}) ({{ .ModelName }}, error)
+}
+
+func (d *{{ .DaoImplName }}) Create(ctx context.Context, queryRunner postgres.QueryRunner, a {{ .ModelName }}) error {
+	query, err := postgres.BuildSimpleInsertQuery(d.baseInsertQuery(), d.insertColumns, a)
+	if err != nil {
+		return fmt.Errorf("sql failed to build insert for query %v: %w", query, err)
+	}
+
+	if _, err = postgres.ExecuteQuery(ctx, queryRunner, query); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *{{ .DaoImplName }}) CreateBatch(ctx context.Context, queryRunner postgres.QueryRunner, arr []{{ .ModelName }}) error {
+	query, err := postgres.BuildBulkInsertQuery(d.baseInsertQuery(), d.insertColumns, arr)
+	if err != nil {
+		return fmt.Errorf("sql failed to build insert for query %v: %w", query, err)
+	}
+
+	if _, err = postgres.ExecuteQuery(ctx, queryRunner, query); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *{{ .DaoImplName }}) List(ctx context.Context, queryRunner postgres.QueryRunner) ([]{{ .ModelName }}, error) {
+	query := d.baseSelectQuery()
+
+	return postgres.FetchRows(ctx, queryRunner, query, {{ .ConvertFuncName }})
+}
+
+func (d *{{ .DaoImplName }}) GetById(ctx context.Context, queryRunner postgres.QueryRunner, id {{ .GetByIDType }}) ({{ .ModelName }}, error) {
+	query := d.baseSelectQuery().
+		Where(squirrel.Eq{ {{ .GetByIDColumn }}: id }).
+		Limit(1)
+
+	return postgres.FetchRow(ctx, queryRunner, query, {{ .ConvertFuncName }}, nil)
+}

@@ -1,1 +1,6 @@
 .idea
+
+gogen.yaml
+example.proto
+
+/gogen

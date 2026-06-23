@@ -1,0 +1,27 @@
+// {{ .File.Disclaimer }}
+
+package {{ .File.Package }}
+
+{{ range .Enums -}}
+{{- $enum := . -}}
+type {{ .TypeName }} string
+
+const (
+{{- range .Values }}
+	{{ .ConstName }} {{ $enum.TypeName }} = {{ quote .Value }}
+{{- end }}
+)
+
+var {{ .TypeName }}Values = []{{ .TypeName }}{
+{{- range .Values }}
+	{{ .ConstName }},
+{{- end }}
+}
+
+var {{ .TypeName }}Map = map[string]{{ .TypeName }}{
+{{- range .Values }}
+	{{ quote .Value }}: {{ .ConstName }},
+{{- end }}
+}
+
+{{ end -}}

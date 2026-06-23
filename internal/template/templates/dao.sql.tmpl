@@ -1,0 +1,22 @@
+-- {{ .Disclaimer }}
+
+{{ range .Sequences -}}
+DROP SEQUENCE IF EXISTS {{ sqlIdent . }};
+
+CREATE SEQUENCE IF NOT EXISTS {{ sqlIdent . }};
+
+{{ end -}}
+DROP TABLE IF EXISTS {{ sqlIdent .TableName }};
+
+CREATE TABLE IF NOT EXISTS {{ sqlIdent .TableName }} (
+{{- range .Fields }}
+	{{ sqlIdent .SQLName }} {{ .SQLType }} {{ .SQLExtras }}{{ if not .Last }},{{ end }}
+{{- end }}
+);
+
+{{ range .Indexes -}}
+DROP INDEX IF EXISTS {{ sqlIdent .Name }};
+
+CREATE UNIQUE INDEX IF NOT EXISTS {{ sqlIdent .Name }} ON {{ sqlIdent .Table }} ({{ sqlIdent .Field }});
+
+{{ end -}}
