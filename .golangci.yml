@@ -14,6 +14,7 @@ linters:
     - gochecknoglobals
     - godot
     - godox
+    - gomodguard
     - ireturn
     - lll
     - mnd
@@ -102,6 +103,7 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - cmd/compose_bench
 formatters:
   enable:
     - gofmt
@@ -112,12 +114,11 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(gitlab.2gis.ru/frogger/frogger)
     gofmt:
       simplify: true
     gofumpt:
       extra-rules: false
-      module-path: pixality
+      module-path: github.com/pixality-inc/gogen
   exclusions:
     generated: lax
     paths:

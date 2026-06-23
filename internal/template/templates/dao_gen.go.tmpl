@@ -1,0 +1,123 @@
+// {{ .File.Disclaimer }}
+
+package {{ .File.Package }}
+
+{{- if .File.Imports }}
+import (
+{{- range .File.Imports }}
+	{{ if .Alias }}{{ .Alias }} {{ end }}{{ quote .Path }}
+{{- end }}
+)
+{{- end }}
+
+type {{ .GetterName }} interface {
+{{- range .Fields }}
+	Get{{ .GoName }}() {{ .GoType }}
+{{- end }}
+}
+
+type {{ .SetterName }} interface {
+{{- range .Fields }}
+	Set{{ .GoName }}(value {{ .GoType }})
+{{- end }}
+}
+
+type {{ .ModelImplName }} struct {
+{{- range .Fields }}
+	{{ .VarName }} {{ .GoType }} {{ .Tags }}
+{{- end }}
+}
+
+type {{ .RowName }} struct {
+{{- range .Fields }}
+	{{ .GoName }} {{ .GoType }} {{ .Tags }}
+{{- end }}
+}
+
+func {{ .NewModelName }}(
+{{- range .Fields }}
+	{{ .VarName }} {{ .GoType }},
+{{- end }}
+) *{{ .ModelImplName }} {
+	return &{{ .ModelImplName }}{
+{{- range .Fields }}
+		{{ .VarName }}: {{ .VarName }},
+{{- end }}
+	}
+}
+
+func {{ .ConvertFuncName }}(row {{ .RowName }}) {{ .ModelName }} {
+	return &{{ .ModelImplName }}{
+{{- range .Fields }}
+		{{ .VarName }}: row.{{ .GoName }},
+{{- end }}
+	}
+}
+
+{{ range .Fields -}}
+func (m *{{ $.ModelImplName }}) Get{{ .GoName }}() {{ .GoType }} {
+	return m.{{ .VarName }}
+}
+
+{{ end -}}
+{{ range .Fields -}}
+func (m *{{ $.ModelImplName }}) Set{{ .GoName }}(value {{ .GoType }}) {
+	m.{{ .VarName }} = value
+}
+
+{{ end -}}
+type {{ .TableColumns }} struct {
+{{- range .Fields }}
+	{{ .GoName }} string
+{{- end }}
+}
+
+var {{ .TableNameVar }} = {{ quote .TableName }}
+
+var {{ .TableVar }} = {{ .TableColumns }}{
+{{- range .Fields }}
+	{{ .GoName }}: {{ quote .SQLName }},
+{{- end }}
+}
+
+var {{ .ColumnsVar }} = []string{
+{{- range .Fields }}
+	{{ $.TableVar }}.{{ .GoName }},
+{{- end }}
+}
+
+type {{ .DaoImplName }} struct {
+	tableName       string
+	queryBuilder    *squirrel.StatementBuilderType
+	baseSelectQuery func(columns ...string) squirrel.SelectBuilder
+	baseInsertQuery func() squirrel.InsertBuilder
+	baseUpdateQuery func() squirrel.UpdateBuilder
+	insertColumns   []postgres.GetterInsertColumn[{{ .ModelName }}]
+}
+
+func New{{ .DaoName }}(queryBuilder *squirrel.StatementBuilderType) {{ .DaoName }} {
+	tableName := {{ .TableNameVar }}
+
+	return &{{ .DaoImplName }}{
+		tableName:    tableName,
+		queryBuilder: queryBuilder,
+		baseSelectQuery: func(columns ...string) squirrel.SelectBuilder {
+			if len(columns) == 0 {
+				return queryBuilder.Select({{ .ColumnsVar }}...).From(tableName)
+			}
+
+			return queryBuilder.Select(columns...).From(tableName)
+		},
+		baseInsertQuery: func() squirrel.InsertBuilder {
+			return queryBuilder.Insert(tableName)
+		},
+		baseUpdateQuery: func() squirrel.UpdateBuilder {
+			return queryBuilder.Update(tableName)
+		},
+		insertColumns: []postgres.GetterInsertColumn[{{ .ModelName }}]{
+{{- range .Fields }}
+			postgres.NewGetterInsertColumn({{ $.TableVar }}.{{ .GoName }}, func(o {{ $.ModelName }}) any { return o.Get{{ .GoName }}() }),
+{{- end }}
+		},
+	}
+}

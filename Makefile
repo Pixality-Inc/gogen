@@ -1,5 +1,5 @@
 .PHONY: all
-all: dep gen lint test
+all: dep gen lint test build
 
 .PHONY: gen
 gen:
@@ -19,3 +19,7 @@ test:
 .PHONY: lint
 lint:
 	golangci-lint run --tests
+
+.PHONY: build
+build:
+	go build ./cmd/gogen/gogen.go

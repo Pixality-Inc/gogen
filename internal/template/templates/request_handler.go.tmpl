@@ -1,0 +1,206 @@
+// {{ .File.Disclaimer }}
+
+package {{ .File.Package }}
+
+{{- if .File.Imports }}
+import (
+{{- range .File.Imports }}
+	{{ if .Alias }}{{ .Alias }} {{ end }}{{ quote .Path }}
+{{- end }}
+)
+{{- end }}
+
+func NewRequestHandler(
+	ctx context.Context,
+	router http.Router,
+	controller controllers.Controller,
+	middlewares ...http.Middleware,
+) (fasthttp.RequestHandler, error) {
+{{- range .Registrations }}
+	router.{{ .Method }}({{ quote .URL }}, handleWithController(controller, {{ .Handler }}))
+{{- end }}
+
+	resultHandler := router.Handle()
+
+	slices.Reverse(middlewares)
+
+	for _, middleware := range middlewares {
+		resultHandler = middleware(resultHandler)
+	}
+
+	return resultHandler, nil
+}
+
+func handleWithController(controller controllers.Controller, handler func(ctx *fasthttp.RequestCtx, controller controllers.Controller)) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		handler(ctx, controller)
+	}
+}
+
+{{ range .Handlers -}}
+func {{ .Name }}(ctx *fasthttp.RequestCtx, controller controllers.Controller) {
+{{- if .HasParams }}
+	params := controllers.{{ .ParamsType }}{}
+{{- range .Securities }}
+
+	security, err := {{ .Getter }}(ctx)
+	if err != nil {
+		http.HandleError(ctx, err)
+
+		return
+	}
+{{- if .AuthRequired }}
+
+	if security == nil {
+		http.Unauthorized(ctx)
+
+		return
+	}
+{{- end }}
+
+	params.{{ .FieldName }} = security
+{{- end }}
+{{- range .Params }}
+
+	{
+{{- if eq .In "path" }}
+{{- if .Required }}
+		param, ok := ctx.UserValue({{ quote .SourceName }}).(string)
+		if !ok {
+			http.HandleError(ctx, fmt.Errorf("%w: no required parameter '{{ .SourceName }}' found", http.ErrBadRequest))
+
+			return
+		}
+{{- else }}
+		param, _ := ctx.UserValue({{ quote .SourceName }}).(string)
+{{- end }}
+{{- else if eq .In "header" }}
+		param := string(ctx.Request.Header.Peek({{ quote .SourceName }}))
+{{- else }}
+		param := string(ctx.FormValue({{ quote .SourceName }}))
+{{- end }}
+
+		param = strings.TrimSpace(param)
+{{- if .Required }}
+
+		if param == "" {
+			http.HandleError(ctx, fmt.Errorf("%w: no required parameter '{{ .SourceName }}' found", http.ErrBadRequest))
+
+			return
+		}
+{{- end }}
+
+		if param != "" {
+{{- if .ArrayString }}
+			var paramValue []string
+
+			parts := strings.Split(param, ",")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+
+				paramValue = append(paramValue, part)
+			}
+
+			params.{{ .FieldName }} = paramValue
+{{- else if .String }}
+{{- if .Required }}
+			params.{{ .FieldName }} = param
+{{- else }}
+			params.{{ .FieldName }} = &param
+{{- end }}
+{{- else }}
+{{- if .ModelGetter }}
+			paramValue, err := {{ .ModelGetter }}(param)
+{{- else }}
+			paramValue, err := {{ .ParseFunc }}(param)
+{{- end }}
+			if err != nil {
+				http.HandleError(ctx, fmt.Errorf("%w: parameter '{{ .SourceName }}' is malformed: %w", http.ErrBadRequest, err))
+
+				return
+			}
+{{- if .Required }}
+
+			params.{{ .FieldName }} = paramValue
+{{- else }}
+
+			params.{{ .FieldName }} = &paramValue
+{{- end }}
+{{- end }}
+		}
+	}
+{{- end }}
+{{- if .RequestModel }}
+
+	{
+		var request {{ .RequestModel }}
+
+		if err := http.ReadBody(ctx, &request); err != nil {
+			http.HandleError(ctx, fmt.Errorf("%w: invalid request body: %w", http.ErrBadRequest, err))
+
+			return
+		}
+
+		params.Request = &request
+	}
+{{- end }}
+{{- if .RawBody }}
+
+	params.RawBody = ctx.Request.Body()
+{{- end }}
+{{- if .RawHeaders }}
+
+	params.RawHeaders = make(map[string]string)
+	for key, value := range ctx.Request.Header.All() {
+		params.RawHeaders[string(key)] = string(value)
+	}
+{{- end }}
+{{- range .Files }}
+
+	{
+		fileHeader, err := ctx.FormFile({{ quote .FormName }})
+		if err != nil {
+			http.HandleError(ctx, fmt.Errorf("failed to get file: %w", err))
+
+			return
+		}
+
+		file, err := fileHeader.Open()
+		if err != nil {
+			http.HandleError(ctx, fmt.Errorf("failed to open file: %w", err))
+
+			return
+		}
+
+		defer func() {
+			if err := file.Close(); err != nil {
+				logger.GetLogger(ctx).WithError(err).Error("failed to close file")
+			}
+		}()
+
+		params.{{ .FieldName }} = http.NewFile(file, fileHeader.Filename, uint64(fileHeader.Size))
+	}
+{{- end }}
+
+	response, err := controller.{{ .ControllerMethod }}(ctx, params)
+{{- else }}
+	response, err := controller.{{ .ControllerMethod }}(ctx)
+{{- end }}
+	if err != nil {
+		http.HandleError(ctx, err)
+
+		return
+	}
+{{- if .IsHTTP }}
+
+	http.HandleHttp[{{ .HTTPType }}](ctx, response)
+{{- else }}
+
+	http.Ok(ctx, response)
+{{- end }}
+}
+
+{{ end -}}

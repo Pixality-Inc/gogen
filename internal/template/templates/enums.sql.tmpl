@@ -1,0 +1,14 @@
+-- {{ .Disclaimer }}
+
+{{ range .Enums -}}
+-- {{ .Name }}
+
+DROP TYPE IF EXISTS {{ .Name }};
+
+CREATE TYPE {{ .Name }} AS ENUM (
+{{- range $index, $value := .Values }}
+	{{- if $index }}, {{ end }}{{ sqlString $value }}
+{{- end }}
+);
+
+{{ end -}}

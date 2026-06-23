@@ -1,0 +1,55 @@
+//nolint:recvcheck
+package {{ .File.Package }}
+
+import (
+	"database/sql/driver"
+
+	"github.com/google/uuid"
+	"github.com/pixality-inc/golang-core/json"
+	"github.com/pixality-inc/golang-core/postgres"
+	"github.com/pixality-inc/golang-core/util"
+)
+
+type {{ .TypeName }} uuid.UUID
+
+var {{ .EmptyVar }} = {{ .TypeName }}(uuid.Nil)
+
+func {{ .ParseFunc }}(s string) ({{ .TypeName }}, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return {{ .EmptyVar }}, err
+	}
+
+	return {{ .TypeName }}(id), nil
+}
+
+func (v {{ .TypeName }}) UUID() uuid.UUID { return uuid.UUID(v) }
+
+func (v {{ .TypeName }}) String() string {
+	return v.UUID().String()
+}
+
+func (v *{{ .TypeName }}) Scan(value any) error {
+	return postgres.ScanTypedIdUuid(value, func(value uuid.UUID) {{ .TypeName }} { return {{ .TypeName }}(value) }, &v)
+}
+
+func (v {{ .TypeName }}) Value() (driver.Value, error) {
+	return postgres.RenderSqlDriverValue(v)
+}
+
+func (v *{{ .TypeName }}) MarshalJSON() ([]byte, error) {
+	return json.Marshal(v.String())
+}
+
+func (v *{{ .TypeName }}) UnmarshalJSON(data []byte) error {
+	value, err := util.UnmarshalJsonToId(data, {{ .EmptyVar }}, func(uuidValue uuid.UUID) {{ .TypeName }} {
+		return {{ .TypeName }}(uuidValue)
+	})
+	if err != nil {
+		return err
+	}
+
+	*v = value
+
+	return nil
+}
