@@ -8,7 +8,7 @@ require (
 	github.com/getkin/kin-openapi v0.137.0
 	github.com/gobeam/stringy v0.0.7
 	github.com/oasdiff/yaml v0.0.9
-	github.com/pixality-inc/golang-core v0.8.6
+	github.com/pixality-inc/golang-core v0.8.7
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
