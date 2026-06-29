@@ -143,7 +143,16 @@ func (p *ParserImpl) processMessage(
 				return fmt.Errorf("%w: %s: %w", ErrProcessEnum, message.Name, err)
 			}
 
-		case *proto.Comment, *proto.Option, *proto.Reserved, *proto.Extensions:
+		case *proto.Comment:
+			// skip
+
+		case *proto.Option:
+			// skip
+
+		case *proto.Reserved:
+			// skip
+
+		case *proto.Extensions:
 			// skip
 
 		default:
@@ -258,7 +267,10 @@ func (p *ParserImpl) protoToField(
 
 		for _, oneOfField := range field.Elements {
 			switch oneOfField.(type) {
-			case *proto.Comment, *proto.Option:
+			case *proto.Comment:
+				continue
+
+			case *proto.Option:
 				continue
 			}
 
@@ -294,7 +306,13 @@ func (p *ParserImpl) processEnum(
 
 	for _, elementField := range enum.Elements {
 		switch field := elementField.(type) {
-		case *proto.Comment, *proto.Option, *proto.Reserved:
+		case *proto.Comment:
+			// skip
+
+		case *proto.Option:
+			// skip
+
+		case *proto.Reserved:
 			// skip
 
 		case *proto.EnumField:
