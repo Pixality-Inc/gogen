@@ -69,7 +69,7 @@ github.com/oasdiff/yaml3
 # github.com/perimeterx/marshmallow v1.1.5
 ## explicit; go 1.17
 github.com/perimeterx/marshmallow
-# github.com/pixality-inc/golang-core v0.8.6
+# github.com/pixality-inc/golang-core v0.8.8
 ## explicit; go 1.26
 github.com/pixality-inc/golang-core/clock
 github.com/pixality-inc/golang-core/config
