@@ -54,6 +54,7 @@ var (
 	errIDsFileNotFound                = errors.New("ids file does not exist")
 	errNoProtoFilesConfigured         = errors.New("no proto files configured")
 	errInvalidIDsConfig               = errors.New("ids config must be a sequence or mapping")
+	errOneOfWithoutDiscriminator      = errors.New("oneof message requires a string discriminator field")
 )
 
 type GeneratorFunc func(ctx context.Context) error
@@ -85,6 +86,15 @@ const (
 	apiFormatUnixTime = "unix_time"
 
 	sqlTypeInt = "INT"
+
+	// discriminatorFieldName is the conventional sibling field that turns a oneof into an
+	// OpenAPI discriminated union: when a message carries a oneof and a string field named
+	// "type", the value is folded into each variant as a const and a discriminator is emitted
+	discriminatorFieldName = "type"
+
+	// oneOfVariantInfix separates the parent schema name from the variant name when naming the
+	// synthesized per-variant schemas of a discriminated oneof
+	oneOfVariantInfix = "_oneof_"
 )
 
 var AllGenerators = []Generator{
@@ -793,6 +803,10 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 	schemas := make(map[string]*openapi3.SchemaRef)
 	visiting := make(map[string]bool)
 
+	registerSchema := func(name string, ref *openapi3.SchemaRef) {
+		schemas[name] = ref
+	}
+
 	var addSchema func(modelName string) (string, error)
 
 	addSchema = func(modelName string) (string, error) {
@@ -817,7 +831,7 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 		visiting[schemaName] = true
 		schemas[schemaName] = objectProperty(schemaName, map[string]*openapi3.SchemaRef{}, nil, propertyExtras{})
 
-		schemaRef, err := g.modelSchema(model, index, addSchema)
+		schemaRef, err := g.modelSchema(model, index, addSchema, registerSchema)
 		if err != nil {
 			return "", err
 		}
@@ -966,24 +980,98 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 	return spec, nil
 }
 
+// oneOfDiscriminatorField reports whether model carries a protojson-style discriminator: a oneof
+// alongside a sibling string field named "type". That field is mandatory for any oneof message:
+// modelSchema turns its absence into a generation error, never a silently-untagged union
+func oneOfDiscriminatorField(model proto_parser.Model) (string, bool) {
+	hasOneOf := false
+	hasType := false
+
+	for _, field := range model.Fields() {
+		if field.IsOneOf() {
+			hasOneOf = true
+
+			continue
+		}
+
+		if field.Name() == discriminatorFieldName &&
+			normalizeProtoType(field.Type()) == protoTypeString &&
+			!field.IsRepeated() && !field.IsMap() {
+			hasType = true
+		}
+	}
+
+	if hasOneOf && hasType {
+		return discriminatorFieldName, true
+	}
+
+	return "", false
+}
+
+// stringConstProperty is the discriminator value folded into a variant: a single-value string enum
+func stringConstProperty(value string) *openapi3.SchemaRef {
+	return &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type: &openapi3.Types{openapi3.TypeString},
+			Enum: []any{value},
+		},
+	}
+}
+
 func (g *Impl) modelSchema(
 	model proto_parser.Model,
 	index protoIndex,
 	addSchema func(modelName string) (string, error),
+	registerSchema func(name string, ref *openapi3.SchemaRef),
 ) (*openapi3.SchemaRef, error) {
 	objectProperties := make(map[string]*openapi3.SchemaRef)
 	requiredProperties := make([]string, 0)
-	topLevelOneOf := false
+
+	discriminatorName, hasDiscriminator := oneOfDiscriminatorField(model)
+
+	// classify fields once so the top-level decision is order-independent: a top-level oneOf is
+	// only possible when the sole content is one oneof (plus the folded discriminator, if any)
+	oneOfFieldCount := 0
+	plainFieldCount := 0
+
+	for _, field := range model.Fields() {
+		switch {
+		case field.IsOneOf():
+			oneOfFieldCount++
+		case hasDiscriminator && field.Name() == discriminatorName:
+			// reserved discriminator, folded into each variant as a const
+		default:
+			plainFieldCount++
+		}
+	}
+
+	// every oneof must carry a string discriminator field; a oneof without one is a generation
+	// error rather than a silently-untagged union, so the frontend always gets a tagged union
+	if oneOfFieldCount > 0 && !hasDiscriminator {
+		return nil, fmt.Errorf("%w: message %q has a oneof but no string field %q",
+			errOneOfWithoutDiscriminator, g.apiModelName(model), discriminatorFieldName)
+	}
+
+	topLevelOneOf := oneOfFieldCount == 1 && plainFieldCount == 0
+	applyDiscriminator := hasDiscriminator && topLevelOneOf
 
 	var topLevelOneOfRefs []*openapi3.SchemaRef
 
+	var discriminator *openapi3.Discriminator
+
 	for _, field := range model.Fields() {
+		if applyDiscriminator && !field.IsOneOf() && field.Name() == discriminatorName {
+			continue
+		}
+
 		if field.IsOneOf() {
-			schemaRefs := make([]*openapi3.SchemaRef, 0, len(field.Children()))
 			children := field.Children()
 			sort.Slice(children, func(i, j int) bool {
 				return children[i].Name() < children[j].Name()
 			})
+
+			schemaRefs := make([]*openapi3.SchemaRef, 0, len(children))
+			mapping := make(openapi3.StringMap[openapi3.MappingRef], len(children))
 
 			for _, child := range children {
 				property, _, err := g.fieldSchema(model, child, index, addSchema)
@@ -991,20 +1079,42 @@ func (g *Impl) modelSchema(
 					return nil, err
 				}
 
-				schemaRefs = append(schemaRefs, &openapi3.SchemaRef{
-					Value: &openapi3.Schema{
-						Type:        &openapi3.Types{openapi3.TypeObject},
-						Title:       child.Name(),
-						Description: child.Name(),
-						Properties: map[string]*openapi3.SchemaRef{
-							child.Name(): property,
-						},
+				variant := &openapi3.Schema{
+					Type:        &openapi3.Types{openapi3.TypeObject},
+					Title:       child.Name(),
+					Description: child.Name(),
+					Properties: map[string]*openapi3.SchemaRef{
+						child.Name(): property,
 					},
-				})
+				}
+
+				if !applyDiscriminator {
+					schemaRefs = append(schemaRefs, &openapi3.SchemaRef{Value: variant})
+
+					continue
+				}
+
+				// discriminated oneof: fold the type const into the variant, register it as a
+				// named schema and reference it. A named ref plus a full mapping is required by
+				// clients that reject a discriminator over inline schemas (e.g. oapi-codegen)
+				variant.Properties[discriminatorName] = stringConstProperty(child.Name())
+				variant.Required = []string{discriminatorName, child.Name()}
+
+				variantName := schemaName(g.apiModelName(model)) + oneOfVariantInfix + child.Name()
+				registerSchema(variantName, &openapi3.SchemaRef{Value: variant})
+
+				schemaRefs = append(schemaRefs, refProperty(variantName))
+				mapping[child.Name()] = openapi3.MappingRef{Ref: "#/components/schemas/" + variantName}
 			}
 
-			if len(objectProperties) == 0 && len(model.Fields()) == 1 {
-				topLevelOneOf = true
+			if applyDiscriminator {
+				discriminator = &openapi3.Discriminator{
+					PropertyName: discriminatorName,
+					Mapping:      mapping,
+				}
+			}
+
+			if topLevelOneOf {
 				topLevelOneOfRefs = schemaRefs
 			} else {
 				objectProperties[field.Name()] = &openapi3.SchemaRef{
@@ -1028,7 +1138,7 @@ func (g *Impl) modelSchema(
 
 	if topLevelOneOf {
 		return &openapi3.SchemaRef{
-			Value: &openapi3.Schema{OneOf: topLevelOneOfRefs},
+			Value: &openapi3.Schema{OneOf: topLevelOneOfRefs, Discriminator: discriminator},
 		}, nil
 	}
 

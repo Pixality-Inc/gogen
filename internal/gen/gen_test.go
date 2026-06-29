@@ -2,11 +2,13 @@ package gen
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/pixality-inc/gogen/internal/config"
 	"github.com/pixality-inc/golang-core/proto_parser"
 )
@@ -259,6 +261,140 @@ func TestBuildProtoIndexDoesNotRegisterNestedTypesByBareName(t *testing.T) {
 
 	if _, ok := index.enumsByName["Flags"]; ok {
 		t.Fatal("nested enum Flags is indexed by bare name")
+	}
+}
+
+const (
+	testAssetMetadataName      = "AssetMetadata"
+	testAssetMetadataInputName = "AssetMetadataInput"
+	testPhotoMetadataName      = "PhotoMetadata"
+	testVideoMetadataName      = "VideoMetadata"
+)
+
+func oneOfDiscriminatorTestModels(generator *Impl) (proto_parser.Model, proto_parser.Model, protoIndex) {
+	photo := proto_parser.NewModel(0, "protocol", nil, testPhotoMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("url", "string")})
+	video := proto_parser.NewModel(0, "protocol", nil, testVideoMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("url", "string")})
+
+	oneOf := func() proto_parser.Field {
+		return proto_parser.NewField("metadata", "oneOf",
+			proto_parser.WithIsOneOf(),
+			proto_parser.WithChildren([]proto_parser.Field{
+				proto_parser.NewField("photo", testPhotoMetadataName),
+				proto_parser.NewField("video", testVideoMetadataName),
+			}),
+		)
+	}
+
+	withType := proto_parser.NewModel(0, "protocol", nil, testAssetMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("type", "string"), oneOf()})
+	withoutType := proto_parser.NewModel(0, "protocol", nil, testAssetMetadataInputName,
+		[]proto_parser.Field{oneOf()})
+
+	index := generator.buildProtoIndex(proto_parser.NewResult(
+		map[string]proto_parser.Model{
+			testAssetMetadataName:      withType,
+			testAssetMetadataInputName: withoutType,
+			testPhotoMetadataName:      photo,
+			testVideoMetadataName:      video,
+		},
+		map[string]proto_parser.Enum{},
+	))
+
+	return withType, withoutType, index
+}
+
+func stubAddSchema(name string) (string, error) {
+	return schemaName(name), nil
+}
+
+func TestModelSchemaOneOfDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	generator, err := New(&config.Config{})
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+
+	withType, _, index := oneOfDiscriminatorTestModels(generator)
+
+	registered := map[string]*openapi3.SchemaRef{}
+	registerSchema := func(name string, schemaRef *openapi3.SchemaRef) {
+		registered[name] = schemaRef
+	}
+
+	ref, err := generator.modelSchema(withType, index, stubAddSchema, registerSchema)
+	if err != nil {
+		t.Fatalf("modelSchema: %v", err)
+	}
+
+	schema := ref.Value
+	if schema.Discriminator == nil || schema.Discriminator.PropertyName != "type" {
+		t.Fatalf("discriminator = %+v, want propertyName=type", schema.Discriminator)
+	}
+
+	if len(schema.OneOf) != 2 {
+		t.Fatalf("oneOf members = %d, want 2", len(schema.OneOf))
+	}
+
+	if len(schema.Properties) != 0 {
+		t.Fatalf("top-level properties = %v, want none (type is folded into variants)", schema.Properties)
+	}
+
+	const photoVariantSchema = "asset_metadata_oneof_photo"
+
+	// children are sorted by name, so member 0 is "photo"; oneOf members must be plain refs so
+	// the discriminator mapping resolves
+	if got := schema.OneOf[0].Ref; got != "#/components/schemas/"+photoVariantSchema {
+		t.Fatalf("photo oneOf member ref = %q, want %s", got, photoVariantSchema)
+	}
+
+	if got, ok := schema.Discriminator.Mapping["photo"]; !ok || got.Ref != "#/components/schemas/"+photoVariantSchema {
+		t.Fatalf("photo mapping = %+v, want ref %s", got, photoVariantSchema)
+	}
+
+	wrapper := registered[photoVariantSchema]
+	if wrapper == nil {
+		t.Fatalf("variant schema %s was not registered", photoVariantSchema)
+	}
+
+	if got := wrapper.Value.Required; len(got) != 2 || got[0] != "type" || got[1] != "photo" {
+		t.Fatalf("photo variant required = %v, want [type photo]", got)
+	}
+
+	typeProp := wrapper.Value.Properties["type"]
+	if typeProp == nil || typeProp.Value.Type == nil || !typeProp.Value.Type.Is(openapi3.TypeString) {
+		t.Fatalf("photo variant type prop is not a string: %+v", typeProp)
+	}
+
+	if len(typeProp.Value.Enum) != 1 || typeProp.Value.Enum[0] != "photo" {
+		t.Fatalf("photo variant type enum = %v, want [photo]", typeProp.Value.Enum)
+	}
+
+	contentRef := wrapper.Value.Properties["photo"]
+	if contentRef == nil || contentRef.Ref != "#/components/schemas/photo_metadata" {
+		t.Fatalf("photo variant content ref = %+v, want $ref photo_metadata", contentRef)
+	}
+}
+
+func TestModelSchemaOneOfWithoutTypeReturnsError(t *testing.T) {
+	t.Parallel()
+
+	generator, err := New(&config.Config{})
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+
+	_, withoutType, index := oneOfDiscriminatorTestModels(generator)
+
+	registerSchema := func(string, *openapi3.SchemaRef) {}
+
+	// a oneof message without a string discriminator field is a hard generation error,
+	// never a silently-untagged union
+	_, err = generator.modelSchema(withoutType, index, stubAddSchema, registerSchema)
+	if !errors.Is(err, errOneOfWithoutDiscriminator) {
+		t.Fatalf("modelSchema error = %v, want errOneOfWithoutDiscriminator", err)
 	}
 }
 
