@@ -54,7 +54,8 @@ var (
 	errIDsFileNotFound                = errors.New("ids file does not exist")
 	errNoProtoFilesConfigured         = errors.New("no proto files configured")
 	errInvalidIDsConfig               = errors.New("ids config must be a sequence or mapping")
-	errOneOfWithoutDiscriminator      = errors.New("oneof message requires a string discriminator field")
+	errOneOfWithoutDiscriminator      = errors.New("oneof message requires a string or enum discriminator field")
+	errOneOfVariantWithoutEnumValue   = errors.New("oneof variant has no matching enum discriminator value")
 )
 
 type GeneratorFunc func(ctx context.Context) error
@@ -88,8 +89,9 @@ const (
 	sqlTypeInt = "INT"
 
 	// discriminatorFieldName is the conventional sibling field that turns a oneof into an
-	// OpenAPI discriminated union: when a message carries a oneof and a string field named
-	// "type", the value is folded into each variant as a const and a discriminator is emitted
+	// OpenAPI discriminated union: when a message carries a oneof and a field named "type" that is
+	// a string or an enum, the value is folded into each variant as a const and a discriminator is
+	// emitted
 	discriminatorFieldName = "type"
 
 	// oneOfVariantInfix separates the parent schema name from the variant name when naming the
@@ -980,12 +982,23 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 	return spec, nil
 }
 
+// oneOfDiscriminator describes the discriminator of a discriminated oneof: the sibling field name
+// and, when that field is enum typed, the resolved enum whose value names tag the variants. enum is
+// nil for a plain string discriminator
+type oneOfDiscriminator struct {
+	fieldName string
+	enum      proto_parser.Enum
+}
+
 // oneOfDiscriminatorField reports whether model carries a protojson-style discriminator: a oneof
-// alongside a sibling string field named "type". That field is mandatory for any oneof message:
-// modelSchema turns its absence into a generation error, never a silently-untagged union
-func oneOfDiscriminatorField(model proto_parser.Model) (string, bool) {
+// alongside a sibling field named "type" that is either a string or an enum. That field is mandatory
+// for any oneof message: modelSchema turns its absence into a generation error, never a silently
+// untagged union
+func (g *Impl) oneOfDiscriminatorField(model proto_parser.Model, index protoIndex) (oneOfDiscriminator, bool) {
 	hasOneOf := false
-	hasType := false
+	found := false
+
+	var discriminator oneOfDiscriminator
 
 	for _, field := range model.Fields() {
 		if field.IsOneOf() {
@@ -994,18 +1007,28 @@ func oneOfDiscriminatorField(model proto_parser.Model) (string, bool) {
 			continue
 		}
 
-		if field.Name() == discriminatorFieldName &&
-			normalizeProtoType(field.Type()) == protoTypeString &&
-			!field.IsRepeated() && !field.IsMap() {
-			hasType = true
+		if field.Name() != discriminatorFieldName || field.IsRepeated() || field.IsMap() {
+			continue
+		}
+
+		if normalizeProtoType(field.Type()) == protoTypeString {
+			discriminator = oneOfDiscriminator{fieldName: discriminatorFieldName}
+			found = true
+
+			continue
+		}
+
+		if enum, ok := g.resolveEnum(model, field.Type(), index); ok {
+			discriminator = oneOfDiscriminator{fieldName: discriminatorFieldName, enum: enum}
+			found = true
 		}
 	}
 
-	if hasOneOf && hasType {
-		return discriminatorFieldName, true
+	if hasOneOf && found {
+		return discriminator, true
 	}
 
-	return "", false
+	return oneOfDiscriminator{}, false
 }
 
 // stringConstProperty is the discriminator value folded into a variant: a single-value string enum
@@ -1018,6 +1041,31 @@ func stringConstProperty(value string) *openapi3.SchemaRef {
 	}
 }
 
+// enumValuePrefix derives the conventional protobuf enum value prefix from an enum type name, e.g.
+// AssetMetadataType -> ASSET_METADATA_TYPE_
+func enumValuePrefix(enumName string) string {
+	return stringy.New(enumName).SnakeCase().ToUpper() + "_"
+}
+
+// discriminatorValue returns the wire value tagging a oneof variant. For a string discriminator it
+// is the variant name. For an enum discriminator it is the enum value name whose normalized form
+// (enum prefix stripped, lowercased) equals the variant name
+func discriminatorValue(discriminator oneOfDiscriminator, variantName string) (string, error) {
+	if discriminator.enum == nil {
+		return variantName, nil
+	}
+
+	prefix := enumValuePrefix(discriminator.enum.Name())
+	for _, entry := range discriminator.enum.Entries() {
+		if strings.ToLower(strings.TrimPrefix(entry.Name(), prefix)) == variantName {
+			return entry.Name(), nil
+		}
+	}
+
+	return "", fmt.Errorf("%w: variant %q in enum %q",
+		errOneOfVariantWithoutEnumValue, variantName, discriminator.enum.Name())
+}
+
 func (g *Impl) modelSchema(
 	model proto_parser.Model,
 	index protoIndex,
@@ -1027,7 +1075,8 @@ func (g *Impl) modelSchema(
 	objectProperties := make(map[string]*openapi3.SchemaRef)
 	requiredProperties := make([]string, 0)
 
-	discriminatorName, hasDiscriminator := oneOfDiscriminatorField(model)
+	disc, hasDiscriminator := g.oneOfDiscriminatorField(model, index)
+	discriminatorName := disc.fieldName
 
 	// classify fields once so the top-level decision is order-independent: a top-level oneOf is
 	// only possible when the sole content is one oneof (plus the folded discriminator, if any)
@@ -1048,7 +1097,7 @@ func (g *Impl) modelSchema(
 	// every oneof must carry a string discriminator field; a oneof without one is a generation
 	// error rather than a silently-untagged union, so the frontend always gets a tagged union
 	if oneOfFieldCount > 0 && !hasDiscriminator {
-		return nil, fmt.Errorf("%w: message %q has a oneof but no string field %q",
+		return nil, fmt.Errorf("%w: message %q has a oneof but no string or enum field %q",
 			errOneOfWithoutDiscriminator, g.apiModelName(model), discriminatorFieldName)
 	}
 
@@ -1097,14 +1146,19 @@ func (g *Impl) modelSchema(
 				// discriminated oneof: fold the type const into the variant, register it as a
 				// named schema and reference it. A named ref plus a full mapping is required by
 				// clients that reject a discriminator over inline schemas (e.g. oapi-codegen)
-				variant.Properties[discriminatorName] = stringConstProperty(child.Name())
+				discValue, err := discriminatorValue(disc, child.Name())
+				if err != nil {
+					return nil, err
+				}
+
+				variant.Properties[discriminatorName] = stringConstProperty(discValue)
 				variant.Required = []string{discriminatorName, child.Name()}
 
 				variantName := schemaName(g.apiModelName(model)) + oneOfVariantInfix + child.Name()
 				registerSchema(variantName, &openapi3.SchemaRef{Value: variant})
 
 				schemaRefs = append(schemaRefs, refProperty(variantName))
-				mapping[child.Name()] = openapi3.MappingRef{Ref: "#/components/schemas/" + variantName}
+				mapping[discValue] = openapi3.MappingRef{Ref: "#/components/schemas/" + variantName}
 			}
 
 			if applyDiscriminator {
@@ -2446,26 +2500,23 @@ func arrayProperty(of *openapi3.SchemaRef, extras propertyExtras) *openapi3.Sche
 	return &openapi3.SchemaRef{Value: schema}
 }
 
+// enumProperty renders a proto enum as a string schema whose allowed values are the enum value
+// names. the wire form follows protojson with UseEnumNumbers disabled, where an enum serializes as
+// its value name. the description keeps the name=number mapping for readability
 func enumProperty(enum proto_parser.Enum, extras propertyExtras) *openapi3.SchemaRef {
 	entries := enumEntriesSortedByValue(enum.Entries())
 	enumAny := make([]any, 0, len(entries))
-	enumVarNames := make([]string, 0, len(entries))
 	descriptionParts := make([]string, 0, len(entries))
 
 	for _, entry := range entries {
-		enumAny = append(enumAny, entry.Value())
-		enumVarNames = append(enumVarNames, entry.Name())
+		enumAny = append(enumAny, entry.Name())
 		descriptionParts = append(descriptionParts, entry.Name()+" = "+strconv.Itoa(entry.Value()))
 	}
 
 	schema := &openapi3.Schema{
-		Type:        &openapi3.Types{openapi3.TypeInteger},
-		Format:      protoTypeInt32,
+		Type:        &openapi3.Types{openapi3.TypeString},
 		Enum:        enumAny,
 		Description: strings.Join(descriptionParts, "\n"),
-		Extensions: map[string]any{
-			"x-enum-varnames": enumVarNames,
-		},
 	}
 	applyExtras(schema, extras)
 
