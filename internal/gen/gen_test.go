@@ -398,6 +398,250 @@ func TestModelSchemaOneOfWithoutTypeReturnsError(t *testing.T) {
 	}
 }
 
+const testAssetMetadataTypeEnum = "AssetMetadataType"
+
+func oneOfEnumDiscriminatorTestModel(generator *Impl) (proto_parser.Model, protoIndex) {
+	photo := proto_parser.NewModel(0, "protocol", nil, testPhotoMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("url", "string")})
+	video := proto_parser.NewModel(0, "protocol", nil, testVideoMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("url", "string")})
+
+	oneOf := proto_parser.NewField("metadata", "oneOf",
+		proto_parser.WithIsOneOf(),
+		proto_parser.WithChildren([]proto_parser.Field{
+			proto_parser.NewField("photo", testPhotoMetadataName),
+			proto_parser.NewField("video", testVideoMetadataName),
+		}),
+	)
+
+	withEnumType := proto_parser.NewModel(0, "protocol", nil, testAssetMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("type", testAssetMetadataTypeEnum), oneOf})
+
+	enum := proto_parser.NewEnum(0, "protocol", nil, testAssetMetadataTypeEnum, []proto_parser.EnumEntry{
+		proto_parser.NewEnumEntry("ASSET_METADATA_TYPE_UNKNOWN", 0, ""),
+		proto_parser.NewEnumEntry("ASSET_METADATA_TYPE_PHOTO", 1, ""),
+		proto_parser.NewEnumEntry("ASSET_METADATA_TYPE_VIDEO", 2, ""),
+	})
+
+	index := generator.buildProtoIndex(proto_parser.NewResult(
+		map[string]proto_parser.Model{
+			testAssetMetadataName: withEnumType,
+			testPhotoMetadataName: photo,
+			testVideoMetadataName: video,
+		},
+		map[string]proto_parser.Enum{
+			testAssetMetadataTypeEnum: enum,
+		},
+	))
+
+	return withEnumType, index
+}
+
+func TestModelSchemaOneOfEnumDiscriminator(t *testing.T) {
+	t.Parallel()
+
+	generator, err := New(&config.Config{})
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+
+	withEnumType, index := oneOfEnumDiscriminatorTestModel(generator)
+
+	registered := map[string]*openapi3.SchemaRef{}
+	registerSchema := func(name string, schemaRef *openapi3.SchemaRef) {
+		registered[name] = schemaRef
+	}
+
+	ref, err := generator.modelSchema(withEnumType, index, stubAddSchema, registerSchema)
+	if err != nil {
+		t.Fatalf("modelSchema: %v", err)
+	}
+
+	schema := ref.Value
+	if schema.Discriminator == nil || schema.Discriminator.PropertyName != "type" {
+		t.Fatalf("discriminator = %+v, want propertyName=type", schema.Discriminator)
+	}
+
+	const (
+		photoVariantSchema = "asset_metadata_oneof_photo"
+		photoEnumValue     = "ASSET_METADATA_TYPE_PHOTO"
+	)
+
+	// the discriminator value tags the variant with its enum value name, not the variant name
+	got, ok := schema.Discriminator.Mapping[photoEnumValue]
+	if !ok || got.Ref != "#/components/schemas/"+photoVariantSchema {
+		t.Fatalf("photo mapping[%s] = %+v, want ref %s", photoEnumValue, got, photoVariantSchema)
+	}
+
+	wrapper := registered[photoVariantSchema]
+	if wrapper == nil {
+		t.Fatalf("variant schema %s was not registered", photoVariantSchema)
+	}
+
+	typeProp := wrapper.Value.Properties["type"]
+	if typeProp == nil || typeProp.Value.Type == nil || !typeProp.Value.Type.Is(openapi3.TypeString) {
+		t.Fatalf("photo variant type prop is not a string: %+v", typeProp)
+	}
+
+	if len(typeProp.Value.Enum) != 1 || typeProp.Value.Enum[0] != photoEnumValue {
+		t.Fatalf("photo variant type enum = %v, want [%s]", typeProp.Value.Enum, photoEnumValue)
+	}
+}
+
+func TestModelSchemaBaseDiscriminatedOneOf(t *testing.T) {
+	t.Parallel()
+
+	generator, err := New(&config.Config{})
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+
+	photo := proto_parser.NewModel(0, "protocol", nil, testPhotoMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("url", "string")})
+	video := proto_parser.NewModel(0, "protocol", nil, testVideoMetadataName,
+		[]proto_parser.Field{proto_parser.NewField("url", "string")})
+
+	oneOf := proto_parser.NewField("payload", "oneOf",
+		proto_parser.WithIsOneOf(),
+		proto_parser.WithChildren([]proto_parser.Field{
+			proto_parser.NewField("photo", testPhotoMetadataName),
+			proto_parser.NewField("video", testVideoMetadataName),
+		}),
+	)
+
+	// a message with common fields (id) + an enum discriminator (type) + a oneof renders as a shared
+	// base plus one allOf variant per enum value
+	asset := proto_parser.NewModel(0, "protocol", nil, "Asset", []proto_parser.Field{
+		proto_parser.NewField("id", "string"),
+		proto_parser.NewField("type", "AssetType"),
+		oneOf,
+	})
+
+	enum := proto_parser.NewEnum(0, "protocol", nil, "AssetType", []proto_parser.EnumEntry{
+		proto_parser.NewEnumEntry("ASSET_TYPE_UNKNOWN", 0, ""),
+		proto_parser.NewEnumEntry("ASSET_TYPE_PHOTO", 1, ""),
+		proto_parser.NewEnumEntry("ASSET_TYPE_VIDEO", 2, ""),
+		proto_parser.NewEnumEntry("ASSET_TYPE_COMMENT", 3, ""), // thin: no matching oneof arm
+	})
+
+	index := generator.buildProtoIndex(proto_parser.NewResult(
+		map[string]proto_parser.Model{
+			"Asset":               asset,
+			testPhotoMetadataName: photo,
+			testVideoMetadataName: video,
+		},
+		map[string]proto_parser.Enum{
+			"AssetType": enum,
+		},
+	))
+
+	registered := map[string]*openapi3.SchemaRef{}
+	registerSchema := func(name string, schemaRef *openapi3.SchemaRef) {
+		registered[name] = schemaRef
+	}
+
+	ref, err := generator.modelSchema(asset, index, stubAddSchema, registerSchema)
+	if err != nil {
+		t.Fatalf("modelSchema: %v", err)
+	}
+
+	if ref.Value.Discriminator == nil || ref.Value.Discriminator.PropertyName != "type" {
+		t.Fatalf("discriminator = %+v, want propertyName=type", ref.Value.Discriminator)
+	}
+
+	// the base carries the common fields but neither the discriminator nor the oneof arms
+	base := registered["asset_base"]
+	if base == nil {
+		t.Fatalf("asset_base was not registered")
+	}
+
+	if base.Value.Properties["id"] == nil {
+		t.Fatalf("asset_base missing common field id")
+	}
+
+	if base.Value.Properties["type"] != nil {
+		t.Fatalf("asset_base must not carry the discriminator field")
+	}
+
+	// fat variant: allOf[base, {type const, arm}]
+	photoVariant := registered["photo_asset"]
+	if photoVariant == nil {
+		t.Fatalf("photo_asset variant was not registered")
+	}
+
+	if len(photoVariant.Value.AllOf) != 2 {
+		t.Fatalf("photo_asset allOf len = %d, want 2", len(photoVariant.Value.AllOf))
+	}
+
+	if photoVariant.Value.AllOf[0].Ref != "#/components/schemas/asset_base" {
+		t.Fatalf("photo_asset first allOf member = %q, want asset_base ref", photoVariant.Value.AllOf[0].Ref)
+	}
+
+	fatProps := photoVariant.Value.AllOf[1].Value.Properties
+	if fatProps["photo"] == nil {
+		t.Fatalf("photo_asset variant missing photo arm")
+	}
+
+	if len(fatProps["type"].Value.Enum) != 1 || fatProps["type"].Value.Enum[0] != "ASSET_TYPE_PHOTO" {
+		t.Fatalf("photo_asset type const = %v, want [ASSET_TYPE_PHOTO]", fatProps["type"].Value.Enum)
+	}
+
+	// thin variant (enum value with no matching arm): allOf[base, {type const}] only
+	commentVariant := registered["comment_asset"]
+	if commentVariant == nil {
+		t.Fatalf("comment_asset thin variant was not registered")
+	}
+
+	thinProps := commentVariant.Value.AllOf[1].Value.Properties
+	if len(thinProps) != 1 || thinProps["type"] == nil {
+		t.Fatalf("comment_asset must carry only the type const, got %v", thinProps)
+	}
+
+	// the zero (unknown) enum value is excluded from the union
+	if _, ok := ref.Value.Discriminator.Mapping["ASSET_TYPE_UNKNOWN"]; ok {
+		t.Fatalf("unknown enum value must not be mapped")
+	}
+
+	if got := ref.Value.Discriminator.Mapping["ASSET_TYPE_PHOTO"]; got.Ref != "#/components/schemas/photo_asset" {
+		t.Fatalf("photo mapping = %+v, want photo_asset ref", got)
+	}
+}
+
+func TestEnumPropertyRendersStringNames(t *testing.T) {
+	t.Parallel()
+
+	enum := proto_parser.NewEnum(0, "protocol", nil, "AssetType", []proto_parser.EnumEntry{
+		proto_parser.NewEnumEntry("ASSET_TYPE_UNKNOWN", 0, ""),
+		proto_parser.NewEnumEntry("ASSET_TYPE_PHOTO", 2, ""),
+		proto_parser.NewEnumEntry("ASSET_TYPE_VIDEO", 1, ""),
+	})
+
+	schema := enumProperty(enum, propertyExtras{}).Value
+	if schema.Type == nil || !schema.Type.Is(openapi3.TypeString) {
+		t.Fatalf("enum schema type = %+v, want string", schema.Type)
+	}
+
+	if schema.Format != "" {
+		t.Fatalf("enum schema format = %q, want empty", schema.Format)
+	}
+
+	// values are sorted by numeric value: UNKNOWN(0), VIDEO(1), PHOTO(2)
+	want := []any{"ASSET_TYPE_UNKNOWN", "ASSET_TYPE_VIDEO", "ASSET_TYPE_PHOTO"}
+	if len(schema.Enum) != len(want) {
+		t.Fatalf("enum values = %v, want %v", schema.Enum, want)
+	}
+
+	for i := range want {
+		if schema.Enum[i] != want[i] {
+			t.Fatalf("enum[%d] = %v, want %v", i, schema.Enum[i], want[i])
+		}
+	}
+
+	if _, ok := schema.Extensions["x-enum-varnames"]; ok {
+		t.Fatal("x-enum-varnames should be removed")
+	}
+}
+
 func writeTestFile(t *testing.T, root string, name string, content string) {
 	t.Helper()
 
