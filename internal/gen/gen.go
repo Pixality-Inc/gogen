@@ -97,6 +97,10 @@ const (
 	// oneOfVariantInfix separates the parent schema name from the variant name when naming the
 	// synthesized per-variant schemas of a discriminated oneof
 	oneOfVariantInfix = "_oneof_"
+
+	// baseSchemaSuffix names the shared base object of a message that mixes common fields with a
+	// discriminated oneof: "<name>_base" holds the common fields that every variant allOf-merges
+	baseSchemaSuffix = "_base"
 )
 
 var AllGenerators = []Generator{
@@ -1104,6 +1108,14 @@ func (g *Impl) modelSchema(
 	topLevelOneOf := oneOfFieldCount == 1 && plainFieldCount == 0
 	applyDiscriminator := hasDiscriminator && topLevelOneOf
 
+	// a message that mixes common fields with a single discriminated oneof renders as a shared base
+	// object plus one allOf variant per discriminator enum value (the inline-payload union shape,
+	// e.g. Asset). Unlike topLevelOneOf, the base carries the common fields; requires an enum
+	// discriminator so the variant set can be driven by enum values
+	if oneOfFieldCount == 1 && plainFieldCount > 0 && hasDiscriminator && disc.enum != nil {
+		return g.discriminatedOneOfWithBaseSchema(model, index, addSchema, registerSchema, disc)
+	}
+
 	var topLevelOneOfRefs []*openapi3.SchemaRef
 
 	var discriminator *openapi3.Discriminator
@@ -1197,6 +1209,113 @@ func (g *Impl) modelSchema(
 	}
 
 	return objectProperty(schemaName(g.apiModelName(model)), objectProperties, requiredProperties, propertyExtras{}), nil
+}
+
+// discriminatedOneOfWithBaseSchema renders a message that carries common fields alongside a single
+// discriminated oneof. It emits a shared "<name>_base" object with the common fields, one
+// "<arm>_<name>" variant per discriminator enum value (each allOf-merged with the base; a variant
+// whose enum value matches a oneof arm carries that arm's payload, the rest are base-only), and a
+// top-level oneOf+discriminator tying them together. The zero ("unknown") enum value is skipped.
+func (g *Impl) discriminatedOneOfWithBaseSchema(
+	model proto_parser.Model,
+	index protoIndex,
+	addSchema func(modelName string) (string, error),
+	registerSchema func(name string, ref *openapi3.SchemaRef),
+	disc oneOfDiscriminator,
+) (*openapi3.SchemaRef, error) {
+	discriminatorName := disc.fieldName
+
+	baseProperties := make(map[string]*openapi3.SchemaRef)
+	baseRequired := make([]string, 0)
+
+	var oneOfField proto_parser.Field
+
+	for _, field := range model.Fields() {
+		if field.IsOneOf() {
+			oneOfField = field
+
+			continue
+		}
+
+		// the discriminator lives only on the variants as a const, never on the base, so that the
+		// allOf merge never declares "type" twice
+		if field.Name() == discriminatorName {
+			continue
+		}
+
+		property, required, err := g.fieldSchema(model, field, index, addSchema)
+		if err != nil {
+			return nil, err
+		}
+
+		baseProperties[field.Name()] = property
+		if required {
+			baseRequired = append(baseRequired, field.Name())
+		}
+	}
+
+	modelSlug := schemaName(g.apiModelName(model))
+	baseName := modelSlug + baseSchemaSuffix
+	registerSchema(baseName, objectProperty(baseName, baseProperties, baseRequired, propertyExtras{}))
+
+	arms := make(map[string]proto_parser.Field, len(oneOfField.Children()))
+	for _, child := range oneOfField.Children() {
+		arms[child.Name()] = child
+	}
+
+	schemaRefs := make([]*openapi3.SchemaRef, 0)
+	mapping := make(openapi3.StringMap[openapi3.MappingRef])
+
+	prefix := enumValuePrefix(disc.enum.Name())
+
+	for _, entry := range enumEntriesSortedByValue(disc.enum.Entries()) {
+		if entry.Value() == 0 {
+			continue
+		}
+
+		armName := strings.ToLower(strings.TrimPrefix(entry.Name(), prefix))
+
+		variantObject := &openapi3.Schema{
+			Type: &openapi3.Types{openapi3.TypeObject},
+			Properties: map[string]*openapi3.SchemaRef{
+				discriminatorName: stringConstProperty(entry.Name()),
+			},
+			Required: []string{discriminatorName},
+		}
+
+		if child, ok := arms[armName]; ok {
+			property, _, err := g.fieldSchema(model, child, index, addSchema)
+			if err != nil {
+				return nil, err
+			}
+
+			variantObject.Properties[child.Name()] = property
+			variantObject.Required = append(variantObject.Required, child.Name())
+		}
+
+		variantName := armName + "_" + modelSlug
+
+		variant := &openapi3.Schema{
+			Title:       variantName,
+			Description: variantName,
+			AllOf: []*openapi3.SchemaRef{
+				refProperty(baseName),
+				{Value: variantObject},
+			},
+		}
+
+		registerSchema(variantName, &openapi3.SchemaRef{Value: variant})
+
+		schemaRefs = append(schemaRefs, refProperty(variantName))
+		mapping[entry.Name()] = openapi3.MappingRef{Ref: "#/components/schemas/" + variantName}
+	}
+
+	return &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			OneOf:         schemaRefs,
+			Discriminator: &openapi3.Discriminator{PropertyName: discriminatorName, Mapping: mapping},
+		},
+	}, nil
 }
 
 func (g *Impl) fieldSchema(
