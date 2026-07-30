@@ -637,6 +637,15 @@ func TestEnumPropertyRendersStringNames(t *testing.T) {
 		}
 	}
 
+	wantDescription := "| Key | Value |\n" +
+		"| --- | --- |\n" +
+		"| ASSET_TYPE_UNKNOWN | 0 |\n" +
+		"| ASSET_TYPE_VIDEO | 1 |\n" +
+		"| ASSET_TYPE_PHOTO | 2 |"
+	if schema.Description != wantDescription {
+		t.Errorf("enum description = %q, want %q", schema.Description, wantDescription)
+	}
+
 	if _, ok := schema.Extensions["x-enum-varnames"]; ok {
 		t.Fatal("x-enum-varnames should be removed")
 	}
