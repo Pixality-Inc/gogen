@@ -1070,6 +1070,25 @@ func discriminatorValue(discriminator oneOfDiscriminator, variantName string) (s
 		errOneOfVariantWithoutEnumValue, variantName, discriminator.enum.Name())
 }
 
+func modelFieldCounts(
+	model proto_parser.Model,
+	discriminatorName string,
+	hasDiscriminator bool,
+) (oneOfFieldCount int, plainFieldCount int) {
+	for _, field := range model.Fields() {
+		switch {
+		case field.IsOneOf():
+			oneOfFieldCount++
+		case hasDiscriminator && field.Name() == discriminatorName:
+			// reserved discriminator, folded into each variant as a const
+		default:
+			plainFieldCount++
+		}
+	}
+
+	return oneOfFieldCount, plainFieldCount
+}
+
 func (g *Impl) modelSchema(
 	model proto_parser.Model,
 	index protoIndex,
@@ -1084,19 +1103,7 @@ func (g *Impl) modelSchema(
 
 	// classify fields once so the top-level decision is order-independent: a top-level oneOf is
 	// only possible when the sole content is one oneof (plus the folded discriminator, if any)
-	oneOfFieldCount := 0
-	plainFieldCount := 0
-
-	for _, field := range model.Fields() {
-		switch {
-		case field.IsOneOf():
-			oneOfFieldCount++
-		case hasDiscriminator && field.Name() == discriminatorName:
-			// reserved discriminator, folded into each variant as a const
-		default:
-			plainFieldCount++
-		}
-	}
+	oneOfFieldCount, plainFieldCount := modelFieldCounts(model, discriminatorName, hasDiscriminator)
 
 	// every oneof must carry a string discriminator field; a oneof without one is a generation
 	// error rather than a silently-untagged union, so the frontend always gets a tagged union
@@ -2620,16 +2627,20 @@ func arrayProperty(of *openapi3.SchemaRef, extras propertyExtras) *openapi3.Sche
 }
 
 // enumProperty renders a proto enum as a string schema whose allowed values are the enum value
-// names. the wire form follows protojson with UseEnumNumbers disabled, where an enum serializes as
-// its value name. the description keeps the name=number mapping for readability
+// names. The wire form follows protojson with UseEnumNumbers disabled, where an enum serializes as
+// its value name. The description keeps the name-to-number mapping in a Markdown table.
 func enumProperty(enum proto_parser.Enum, extras propertyExtras) *openapi3.SchemaRef {
 	entries := enumEntriesSortedByValue(enum.Entries())
 	enumAny := make([]any, 0, len(entries))
-	descriptionParts := make([]string, 0, len(entries))
+	descriptionParts := make([]string, 0, len(entries)+2)
+	descriptionParts = append(descriptionParts, "| Key | Value |", "| --- | --- |")
 
 	for _, entry := range entries {
 		enumAny = append(enumAny, entry.Name())
-		descriptionParts = append(descriptionParts, entry.Name()+" = "+strconv.Itoa(entry.Value()))
+		descriptionParts = append(
+			descriptionParts,
+			"| "+entry.Name()+" | "+strconv.Itoa(entry.Value())+" |",
+		)
 	}
 
 	schema := &openapi3.Schema{
