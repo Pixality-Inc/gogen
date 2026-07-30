@@ -1070,6 +1070,25 @@ func discriminatorValue(discriminator oneOfDiscriminator, variantName string) (s
 		errOneOfVariantWithoutEnumValue, variantName, discriminator.enum.Name())
 }
 
+func modelFieldCounts(
+	model proto_parser.Model,
+	discriminatorName string,
+	hasDiscriminator bool,
+) (oneOfFieldCount int, plainFieldCount int) {
+	for _, field := range model.Fields() {
+		switch {
+		case field.IsOneOf():
+			oneOfFieldCount++
+		case hasDiscriminator && field.Name() == discriminatorName:
+			// reserved discriminator, folded into each variant as a const
+		default:
+			plainFieldCount++
+		}
+	}
+
+	return oneOfFieldCount, plainFieldCount
+}
+
 func (g *Impl) modelSchema(
 	model proto_parser.Model,
 	index protoIndex,
@@ -1084,19 +1103,7 @@ func (g *Impl) modelSchema(
 
 	// classify fields once so the top-level decision is order-independent: a top-level oneOf is
 	// only possible when the sole content is one oneof (plus the folded discriminator, if any)
-	oneOfFieldCount := 0
-	plainFieldCount := 0
-
-	for _, field := range model.Fields() {
-		switch {
-		case field.IsOneOf():
-			oneOfFieldCount++
-		case hasDiscriminator && field.Name() == discriminatorName:
-			// reserved discriminator, folded into each variant as a const
-		default:
-			plainFieldCount++
-		}
-	}
+	oneOfFieldCount, plainFieldCount := modelFieldCounts(model, discriminatorName, hasDiscriminator)
 
 	// every oneof must carry a string discriminator field; a oneof without one is a generation
 	// error rather than a silently-untagged union, so the frontend always gets a tagged union

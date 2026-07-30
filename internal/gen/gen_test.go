@@ -288,7 +288,7 @@ func oneOfDiscriminatorTestModels(generator *Impl) (proto_parser.Model, proto_pa
 	}
 
 	withType := proto_parser.NewModel(0, "protocol", nil, testAssetMetadataName,
-		[]proto_parser.Field{proto_parser.NewField("type", "string"), oneOf()})
+		[]proto_parser.Field{proto_parser.NewField(discriminatorFieldName, "string"), oneOf()})
 	withoutType := proto_parser.NewModel(0, "protocol", nil, testAssetMetadataInputName,
 		[]proto_parser.Field{oneOf()})
 
@@ -330,7 +330,7 @@ func TestModelSchemaOneOfDiscriminator(t *testing.T) {
 	}
 
 	schema := ref.Value
-	if schema.Discriminator == nil || schema.Discriminator.PropertyName != "type" {
+	if schema.Discriminator == nil || schema.Discriminator.PropertyName != discriminatorFieldName {
 		t.Fatalf("discriminator = %+v, want propertyName=type", schema.Discriminator)
 	}
 
@@ -359,11 +359,11 @@ func TestModelSchemaOneOfDiscriminator(t *testing.T) {
 		t.Fatalf("variant schema %s was not registered", photoVariantSchema)
 	}
 
-	if got := wrapper.Value.Required; len(got) != 2 || got[0] != "type" || got[1] != "photo" {
+	if got := wrapper.Value.Required; len(got) != 2 || got[0] != discriminatorFieldName || got[1] != "photo" {
 		t.Fatalf("photo variant required = %v, want [type photo]", got)
 	}
 
-	typeProp := wrapper.Value.Properties["type"]
+	typeProp := wrapper.Value.Properties[discriminatorFieldName]
 	if typeProp == nil || typeProp.Value.Type == nil || !typeProp.Value.Type.Is(openapi3.TypeString) {
 		t.Fatalf("photo variant type prop is not a string: %+v", typeProp)
 	}
@@ -415,7 +415,7 @@ func oneOfEnumDiscriminatorTestModel(generator *Impl) (proto_parser.Model, proto
 	)
 
 	withEnumType := proto_parser.NewModel(0, "protocol", nil, testAssetMetadataName,
-		[]proto_parser.Field{proto_parser.NewField("type", testAssetMetadataTypeEnum), oneOf})
+		[]proto_parser.Field{proto_parser.NewField(discriminatorFieldName, testAssetMetadataTypeEnum), oneOf})
 
 	enum := proto_parser.NewEnum(0, "protocol", nil, testAssetMetadataTypeEnum, []proto_parser.EnumEntry{
 		proto_parser.NewEnumEntry("ASSET_METADATA_TYPE_UNKNOWN", 0, ""),
@@ -458,7 +458,7 @@ func TestModelSchemaOneOfEnumDiscriminator(t *testing.T) {
 	}
 
 	schema := ref.Value
-	if schema.Discriminator == nil || schema.Discriminator.PropertyName != "type" {
+	if schema.Discriminator == nil || schema.Discriminator.PropertyName != discriminatorFieldName {
 		t.Fatalf("discriminator = %+v, want propertyName=type", schema.Discriminator)
 	}
 
@@ -478,7 +478,7 @@ func TestModelSchemaOneOfEnumDiscriminator(t *testing.T) {
 		t.Fatalf("variant schema %s was not registered", photoVariantSchema)
 	}
 
-	typeProp := wrapper.Value.Properties["type"]
+	typeProp := wrapper.Value.Properties[discriminatorFieldName]
 	if typeProp == nil || typeProp.Value.Type == nil || !typeProp.Value.Type.Is(openapi3.TypeString) {
 		t.Fatalf("photo variant type prop is not a string: %+v", typeProp)
 	}
@@ -513,7 +513,7 @@ func TestModelSchemaBaseDiscriminatedOneOf(t *testing.T) {
 	// base plus one allOf variant per enum value
 	asset := proto_parser.NewModel(0, "protocol", nil, "Asset", []proto_parser.Field{
 		proto_parser.NewField("id", "string"),
-		proto_parser.NewField("type", "AssetType"),
+		proto_parser.NewField(discriminatorFieldName, "AssetType"),
 		oneOf,
 	})
 
@@ -545,7 +545,7 @@ func TestModelSchemaBaseDiscriminatedOneOf(t *testing.T) {
 		t.Fatalf("modelSchema: %v", err)
 	}
 
-	if ref.Value.Discriminator == nil || ref.Value.Discriminator.PropertyName != "type" {
+	if ref.Value.Discriminator == nil || ref.Value.Discriminator.PropertyName != discriminatorFieldName {
 		t.Fatalf("discriminator = %+v, want propertyName=type", ref.Value.Discriminator)
 	}
 
@@ -559,7 +559,7 @@ func TestModelSchemaBaseDiscriminatedOneOf(t *testing.T) {
 		t.Fatalf("asset_base missing common field id")
 	}
 
-	if base.Value.Properties["type"] != nil {
+	if base.Value.Properties[discriminatorFieldName] != nil {
 		t.Fatalf("asset_base must not carry the discriminator field")
 	}
 
@@ -582,8 +582,12 @@ func TestModelSchemaBaseDiscriminatedOneOf(t *testing.T) {
 		t.Fatalf("photo_asset variant missing photo arm")
 	}
 
-	if len(fatProps["type"].Value.Enum) != 1 || fatProps["type"].Value.Enum[0] != "ASSET_TYPE_PHOTO" {
-		t.Fatalf("photo_asset type const = %v, want [ASSET_TYPE_PHOTO]", fatProps["type"].Value.Enum)
+	if len(fatProps[discriminatorFieldName].Value.Enum) != 1 ||
+		fatProps[discriminatorFieldName].Value.Enum[0] != "ASSET_TYPE_PHOTO" {
+		t.Fatalf(
+			"photo_asset type const = %v, want [ASSET_TYPE_PHOTO]",
+			fatProps[discriminatorFieldName].Value.Enum,
+		)
 	}
 
 	// thin variant (enum value with no matching arm): allOf[base, {type const}] only
@@ -593,7 +597,7 @@ func TestModelSchemaBaseDiscriminatedOneOf(t *testing.T) {
 	}
 
 	thinProps := commentVariant.Value.AllOf[1].Value.Properties
-	if len(thinProps) != 1 || thinProps["type"] == nil {
+	if len(thinProps) != 1 || thinProps[discriminatorFieldName] == nil {
 		t.Fatalf("comment_asset must carry only the type const, got %v", thinProps)
 	}
 
