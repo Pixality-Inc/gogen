@@ -74,15 +74,16 @@ const (
 	importContext = "context"
 	importTime    = "time"
 
-	protoTypeBool   = "bool"
-	protoTypeDouble = "double"
-	protoTypeFloat  = "float"
-	protoTypeInt32  = "int32"
-	protoTypeInt64  = "int64"
-	protoTypeString = "string"
-	protoTypeUint32 = "uint32"
-	protoTypeUint64 = "uint64"
-	protoTypeUUID   = "uuid"
+	protoTypeBool    = "bool"
+	protoTypeDouble  = "double"
+	protoTypeFloat   = "float"
+	protoTypeInt32   = "int32"
+	protoTypeInt64   = "int64"
+	protoTypeFloat64 = "float64"
+	protoTypeString  = "string"
+	protoTypeUint32  = "uint32"
+	protoTypeUint64  = "uint64"
+	protoTypeUUID    = "uuid"
 
 	apiFormatUnixTime = "unix_time"
 
@@ -1587,6 +1588,13 @@ func (g *Impl) generateModelField(field sourceFileField, enumsMap map[string]nam
 		modelDataType = dataTypeOrDefault(protoTypeInt64)
 		if field.Nullable {
 			modelDataType = nullableDataTypeOrDefault("*int64")
+		}
+	case protoTypeFloat64:
+		sqlDataType = "DOUBLE PRECISION"
+
+		modelDataType = dataTypeOrDefault(protoTypeFloat64)
+		if field.Nullable {
+			modelDataType = nullableDataTypeOrDefault("*float64")
 		}
 	case protoTypeInt32:
 		sqlDataType = sqlTypeInt
