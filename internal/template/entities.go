@@ -76,6 +76,7 @@ type RouteHandler struct {
 	Files            []HandlerFile
 	IsHTTP           bool
 	HTTPType         string
+	IsStream         bool
 }
 
 type RequestHandlerData struct {
