@@ -87,6 +87,7 @@ type ApiRoute struct {
 	Security       []string                     `json:"security"       yaml:"security"`
 	AuthRequired   bool                         `json:"authRequired"   yaml:"authRequired"`
 	IsHTTP         bool                         `json:"http"           yaml:"http"`
+	IsStream       bool                         `json:"stream"         yaml:"stream"`
 	Parameters     map[string]ApiRouteParameter `json:"parameters"     yaml:"parameters"`
 	RequestFiles   []ApiRouteRequestFile        `json:"requestFiles"   yaml:"requestFiles"`
 	RequestModel   string                       `json:"requestModel"   yaml:"requestModel"`

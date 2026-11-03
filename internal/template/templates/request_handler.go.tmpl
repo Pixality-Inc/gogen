@@ -197,6 +197,9 @@ func {{ .Name }}(ctx *fasthttp.RequestCtx, controller controllers.Controller) {
 {{- if .IsHTTP }}
 
 	http.HandleHttp[{{ .HTTPType }}](ctx, response)
+{{- else if .IsStream }}
+
+	http.HandleStream(ctx, response)
 {{- else }}
 
 	http.Ok(ctx, response)

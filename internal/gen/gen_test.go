@@ -698,3 +698,12 @@ func readTestFile(t *testing.T, root string, name string) string {
 
 	return string(content)
 }
+
+func assertFileNotContains(t *testing.T, root string, name string, needle string) {
+	t.Helper()
+
+	content := readTestFile(t, root, name)
+	if strings.Contains(content, needle) {
+		t.Fatalf("%s contains %q\n%s", name, needle, content)
+	}
+}

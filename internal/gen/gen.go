@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"path"
 	"regexp"
 	"slices"
@@ -56,6 +57,8 @@ var (
 	errInvalidIDsConfig               = errors.New("ids config must be a sequence or mapping")
 	errOneOfWithoutDiscriminator      = errors.New("oneof message requires a string or enum discriminator field")
 	errOneOfVariantWithoutEnumValue   = errors.New("oneof variant has no matching enum discriminator value")
+	errStreamWithHTTP                 = errors.New("stream and http can not be combined in one operation")
+	errStreamResponseModel            = errors.New("stream operation can not have a response model besides errors")
 )
 
 type GeneratorFunc func(ctx context.Context) error
@@ -86,6 +89,14 @@ const (
 	protoTypeUUID    = "uuid"
 
 	apiFormatUnixTime = "unix_time"
+
+	// streamResponseType is what the controller of a stream operation returns
+	streamResponseType = "http.StreamResponse"
+
+	mediaTypeJSON        = "application/json"
+	mediaTypeEventStream = "text/event-stream"
+	mediaTypeAny         = "*/*"
+	formatBinary         = "binary"
 
 	sqlTypeInt = "INT"
 
@@ -508,14 +519,13 @@ func (g *Impl) generateApiControllers(ctx context.Context, apiSchema *ApiSchema)
 				})
 			}
 
-			responseType := g.controllerResponseType(operation, apiSchema.Api.Errors)
-			if operation.IsHTTP {
-				hasHTTP = true
+			if err := validateStreamOperation(operation, apiSchema.Api.Errors); err != nil {
+				return err
+			}
 
-				responseType = "http.HttpResponse[" + strings.TrimPrefix(responseType, "*") + "]"
-				if responseType == "http.HttpResponse[]" {
-					responseType = "http.HttpResponse[any]"
-				}
+			responseType := g.controllerMethodResponseType(operation, apiSchema.Api.Errors)
+			if operation.IsHTTP || operation.IsStream {
+				hasHTTP = true
 			}
 
 			methods = append(methods, gentemplate.ControllerMethod{
@@ -667,6 +677,7 @@ func (g *Impl) generateApiRequestHandler(ctx context.Context, apiSchema *ApiSche
 				Files:            files,
 				IsHTTP:           operation.IsHTTP,
 				HTTPType:         httpType,
+				IsStream:         operation.IsStream,
 			})
 		}
 	}
@@ -864,6 +875,10 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 				continue
 			}
 
+			if err := validateStreamOperation(operation, apiSchema.Api.Errors); err != nil {
+				return nil, err
+			}
+
 			hasItems = true
 
 			for _, tag := range operation.Tags {
@@ -902,7 +917,7 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 
 				required := make([]string, 0, len(operation.RequestFiles))
 				for _, fileEntry := range operation.RequestFiles {
-					filesMap[fileEntry.Name] = stringProperty(propertyExtras{Format: "binary"})
+					filesMap[fileEntry.Name] = stringProperty(propertyExtras{Format: formatBinary})
 					required = append(required, fileEntry.Name)
 				}
 
@@ -926,7 +941,7 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 					Value: &openapi3.RequestBody{
 						Description: requestModelName,
 						Content: openapi3.Content{
-							"application/json": {
+							mediaTypeJSON: {
 								Schema: refProperty(requestModelName),
 							},
 						},
@@ -934,7 +949,14 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 				}
 			case operation.RawBody:
 				pathOperation.RequestBody = &openapi3.RequestBodyRef{
-					Value: &openapi3.RequestBody{Description: "Raw Body"},
+					Value: &openapi3.RequestBody{
+						Description: "Raw Body",
+						Content: openapi3.Content{
+							mediaTypeAny: {
+								Schema: stringProperty(propertyExtras{Format: formatBinary}),
+							},
+						},
+					},
 				}
 			}
 
@@ -962,7 +984,7 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 		}
 
 		if hasItems {
-			paths[routeEntry.URL] = pathItem
+			paths[swaggerRoutePath(routeEntry.URL)] = pathItem
 		}
 	}
 
@@ -1465,7 +1487,7 @@ func (g *Impl) openapiResponses(
 			Value: &openapi3.Response{
 				Description: &description,
 				Content: openapi3.Content{
-					"application/json": {
+					mediaTypeJSON: {
 						Schema: refProperty(responseModelName),
 					},
 				},
@@ -1482,6 +1504,20 @@ func (g *Impl) openapiResponses(
 		} else {
 			responseOptions = append(responseOptions, openapi3.WithStatus(200, responseRef))
 		}
+	}
+
+	if operation.IsStream {
+		description := "Streamed response"
+		responseOptions = append(responseOptions, openapi3.WithStatus(http.StatusOK, &openapi3.ResponseRef{
+			Value: &openapi3.Response{
+				Description: &description,
+				Content: openapi3.Content{
+					mediaTypeEventStream: {
+						Schema: stringProperty(propertyExtras{}),
+					},
+				},
+			},
+		}))
 	}
 
 	if len(responseOptions) == 0 {
@@ -2294,6 +2330,78 @@ func (g *Impl) apiHandlerParam(name string, param ApiRouteParameter) (gentemplat
 	}
 
 	return result, nil
+}
+
+// validateStreamOperation rejects what a stream operation can not express: its controller returns
+// http.StreamResponse, so neither the http response wrapper nor a success model fits it
+func validateStreamOperation(operation ApiRoute, errorsMap map[string]string) error {
+	if !operation.IsStream {
+		return nil
+	}
+
+	if operation.IsHTTP {
+		return fmt.Errorf("%w: %s", errStreamWithHTTP, operation.ID)
+	}
+
+	for _, modelName := range operation.ResponseModels {
+		if _, ok := errorsMap[modelName]; !ok {
+			return fmt.Errorf("%w: %s in %s", errStreamResponseModel, modelName, operation.ID)
+		}
+	}
+
+	return nil
+}
+
+// swaggerRoutePath turns a router path into an openapi one: a parameter pattern such as the tail
+// wildcard {path:*} is router syntax, openapi names the parameter only ({path})
+func swaggerRoutePath(url string) string {
+	var result strings.Builder
+
+	rest := url
+
+	for {
+		start := strings.IndexByte(rest, '{')
+		if start < 0 {
+			result.WriteString(rest)
+
+			return result.String()
+		}
+
+		end := strings.IndexByte(rest[start:], '}')
+		if end < 0 {
+			result.WriteString(rest)
+
+			return result.String()
+		}
+
+		end += start
+		name, _, _ := strings.Cut(rest[start+1:end], ":")
+
+		result.WriteString(rest[:start])
+		result.WriteString("{" + name + "}")
+
+		rest = rest[end+1:]
+	}
+}
+
+// controllerMethodResponseType is the return type of the controller method: the response model,
+// or the golang-core/http wrapper of an http or a stream operation
+func (g *Impl) controllerMethodResponseType(operation ApiRoute, errorsMap map[string]string) string {
+	responseType := g.controllerResponseType(operation, errorsMap)
+
+	switch {
+	case operation.IsStream:
+		return streamResponseType
+	case operation.IsHTTP:
+		responseType = "http.HttpResponse[" + strings.TrimPrefix(responseType, "*") + "]"
+		if responseType == "http.HttpResponse[]" {
+			responseType = "http.HttpResponse[any]"
+		}
+
+		return responseType
+	default:
+		return responseType
+	}
 }
 
 func (g *Impl) controllerResponseType(operation ApiRoute, errorsMap map[string]string) string {
