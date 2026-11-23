@@ -67,6 +67,10 @@ api:
     - ["", "example/internal/protocol"]
   routes:
     /books:
+      post:
+        id: BookCreate
+        requestModel: protocol.Book
+        responseModels: ["400", "protocol.Book"]
       get:
         id: BooksGet
         tags: [books]
@@ -83,6 +87,12 @@ api:
             type: string
             format: uuid
             required: true
+        responseModels: ["400", "protocol.Book"]
+    /optional-book:
+      post:
+        id: BookOptional
+        requestModel: protocol.Book
+        requestBodyRequired: false
         responseModels: ["400", "protocol.Book"]
   errors:
     400: "protocol.ErrorResponse"
@@ -133,6 +143,19 @@ ids:
 	}
 
 	assertFileContains(t, dir, "docs/swagger.yaml", "openapi: 3.0.0")
+
+	swagger, err := openapi3.NewLoader().LoadFromFile(filepath.Join(dir, "docs/swagger.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !swagger.Paths.Value("/books").Post.RequestBody.Value.Required ||
+		swagger.Paths.Value("/optional-book").Post.RequestBody.Value.Required {
+		t.Fatal("unexpected request body required flags")
+	}
+
+	assertFileContains(t, dir, "internal/api/request_handler_gen.go", "request body is required")
+	assertFileContains(t, dir, "internal/api/request_handler_gen.go", "if len(ctx.Request.Body()) > 0 {")
 	assertFileNotExists(t, dir, "internal/api/gen.go")
 	assertFileContains(t, dir, "internal/api/controllers/controller_gen.go", "BooksGet(ctx context.Context) (*protocol.BooksResponse, error)")
 	assertFileContains(t, dir, "internal/api/controllers/controller_gen.go", "Id uuid.UUID")
@@ -140,6 +163,36 @@ ids:
 	assertFileContains(t, dir, "internal/dao/books.go", "GetById(ctx context.Context, queryRunner postgres.QueryRunner, id types.BookId)")
 	assertFileContains(t, dir, "internal/types/book_gen.go", "type BookId uuid.UUID")
 	assertFileContains(t, dir, "migrations/models/books_gen.sql", `CREATE TABLE IF NOT EXISTS "books"`)
+}
+
+func TestGenerateRejectsRequiredBodyWithoutDefinition(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeTestFile(t, dir, "gen/api.yaml", `
+api:
+  routes:
+    /missing:
+      post:
+        id: Missing
+        requestBodyRequired: true
+`)
+
+	var cfg config.Config
+
+	cfg.Gen.Settings.WorkDir = dir
+
+	generator, err := New(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, generate := range []func(context.Context) error{generator.generateSwagger, generator.generateApi} {
+		err := generate(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "post /missing") || !strings.Contains(err.Error(), "requestBodyRequired") {
+			t.Fatalf("expected a route configuration error, got %v", err)
+		}
+	}
 }
 
 func TestResolveModelPrefersCurrentMessageScope(t *testing.T) {

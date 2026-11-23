@@ -34,6 +34,7 @@ var (
 	errUnknownSecurityType            = errors.New("unknown security type")
 	errOnlyOneSecurityAllowed         = errors.New("only 1 security is allowed for operation")
 	errUnknownRouteOperation          = errors.New("unknown route operation")
+	errRequiredBodyWithoutDefinition  = errors.New("requestBodyRequired requires requestModel, requestFiles or rawBody")
 	errUnknownParameterType           = errors.New("unknown parameter type")
 	errUnknownParameterFormat         = errors.New("unknown parameter format")
 	errUnknownParameterIn             = errors.New("unknown parameter 'in'")
@@ -600,9 +601,7 @@ func (g *Impl) generateApiRequestHandler(ctx context.Context, apiSchema *ApiSche
 
 			hasParams := len(operation.Security) > 0 ||
 				len(operation.Parameters) > 0 ||
-				len(operation.RequestFiles) > 0 ||
-				operation.RequestModel != "" ||
-				operation.RawBody ||
+				operation.hasRequestBody() ||
 				operation.RawHeaders
 			if hasParams {
 				paramsType = operation.ID + "Request"
@@ -643,7 +642,7 @@ func (g *Impl) generateApiRequestHandler(ctx context.Context, apiSchema *ApiSche
 				needsStrings = true
 			}
 
-			if operation.RequestModel != "" || len(operation.RequestFiles) > 0 {
+			if operation.RequestModel != "" || len(operation.RequestFiles) > 0 || operation.requiresRequestBody() {
 				needsFmt = true
 			}
 
@@ -665,19 +664,20 @@ func (g *Impl) generateApiRequestHandler(ctx context.Context, apiSchema *ApiSche
 			}
 
 			handlers = append(handlers, gentemplate.RouteHandler{
-				Name:             handlerName,
-				ControllerMethod: operation.ID,
-				ParamsType:       paramsType,
-				HasParams:        hasParams,
-				Securities:       securities,
-				Params:           params,
-				RequestModel:     operation.RequestModel,
-				RawBody:          operation.RawBody,
-				RawHeaders:       operation.RawHeaders,
-				Files:            files,
-				IsHTTP:           operation.IsHTTP,
-				HTTPType:         httpType,
-				IsStream:         operation.IsStream,
+				Name:                handlerName,
+				ControllerMethod:    operation.ID,
+				ParamsType:          paramsType,
+				HasParams:           hasParams,
+				Securities:          securities,
+				Params:              params,
+				RequestModel:        operation.RequestModel,
+				RequestBodyRequired: operation.requiresRequestBody(),
+				RawBody:             operation.RawBody,
+				RawHeaders:          operation.RawHeaders,
+				Files:               files,
+				IsHTTP:              operation.IsHTTP,
+				HTTPType:            httpType,
+				IsStream:            operation.IsStream,
 			})
 		}
 	}
@@ -958,6 +958,10 @@ func (g *Impl) buildSwagger(apiSchema *ApiSchema, results *proto_parser.Results)
 						},
 					},
 				}
+			}
+
+			if pathOperation.RequestBody != nil {
+				pathOperation.RequestBody.Value.Required = operation.requiresRequestBody()
 			}
 
 			responses, err := g.openapiResponses(operation, apiSchema.Api.Errors, addSchema)
@@ -1975,6 +1979,14 @@ func (g *Impl) loadApiSchema(ctx context.Context) (*ApiSchema, bool, error) {
 	var apiSchema ApiSchema
 	if err = yamlv3.Unmarshal(buf, &apiSchema); err != nil {
 		return nil, false, err
+	}
+
+	for _, route := range apiSchema.Api.GetRoutes() {
+		for _, entry := range route.Operations {
+			if entry.Route.requiresRequestBody() && !entry.Route.hasRequestBody() {
+				return nil, false, fmt.Errorf("%s %s: %w", entry.Operation, route.URL, errRequiredBodyWithoutDefinition)
+			}
+		}
 	}
 
 	return &apiSchema, true, nil
