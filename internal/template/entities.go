@@ -64,19 +64,20 @@ type HandlerFile struct {
 }
 
 type RouteHandler struct {
-	Name             string
-	ControllerMethod string
-	ParamsType       string
-	HasParams        bool
-	Securities       []HandlerSecurity
-	Params           []HandlerParam
-	RequestModel     string
-	RawBody          bool
-	RawHeaders       bool
-	Files            []HandlerFile
-	IsHTTP           bool
-	HTTPType         string
-	IsStream         bool
+	Name                string
+	ControllerMethod    string
+	ParamsType          string
+	HasParams           bool
+	Securities          []HandlerSecurity
+	Params              []HandlerParam
+	RequestModel        string
+	RequestBodyRequired bool
+	RawBody             bool
+	RawHeaders          bool
+	Files               []HandlerFile
+	IsHTTP              bool
+	HTTPType            string
+	IsStream            bool
 }
 
 type RequestHandlerData struct {

@@ -133,9 +133,20 @@ func {{ .Name }}(ctx *fasthttp.RequestCtx, controller controllers.Controller) {
 		}
 	}
 {{- end }}
-{{- if .RequestModel }}
+{{- if .RequestBodyRequired }}
 
+	if len(ctx.Request.Body()) == 0 {
+		http.HandleError(ctx, fmt.Errorf("%w: request body is required", http.ErrBadRequest))
+
+		return
+	}
+{{- end }}
+{{- if .RequestModel }}
+{{- if .RequestBodyRequired }}
 	{
+{{- else }}
+	if len(ctx.Request.Body()) > 0 {
+{{- end }}
 		var request {{ .RequestModel }}
 
 		if err := http.ReadBody(ctx, &request); err != nil {
@@ -157,6 +168,10 @@ func {{ .Name }}(ctx *fasthttp.RequestCtx, controller controllers.Controller) {
 	for key, value := range ctx.Request.Header.All() {
 		params.RawHeaders[string(key)] = string(value)
 	}
+{{- end }}
+{{- if and .Files (not .RequestBodyRequired) }}
+
+	if len(ctx.Request.Body()) > 0 {
 {{- end }}
 {{- range .Files }}
 
@@ -182,6 +197,9 @@ func {{ .Name }}(ctx *fasthttp.RequestCtx, controller controllers.Controller) {
 		}()
 
 		params.{{ .FieldName }} = http.NewFile(file, fileHeader.Filename, uint64(fileHeader.Size))
+	}
+{{- end }}
+{{- if and .Files (not .RequestBodyRequired) }}
 	}
 {{- end }}
 

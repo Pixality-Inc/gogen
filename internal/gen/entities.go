@@ -94,6 +94,8 @@ type ApiRoute struct {
 	ResponseModels []string                     `json:"responseModels" yaml:"responseModels"`
 	RawBody        bool                         `json:"rawBody"        yaml:"rawBody"`
 	RawHeaders     bool                         `json:"rawHeaders"     yaml:"rawHeaders"`
+
+	RequestBodyRequired *bool `json:"requestBodyRequired" yaml:"requestBodyRequired"`
 }
 
 func (ar *ApiRoute) GetParameters() []ApiRouteParameterEntry {
@@ -111,6 +113,18 @@ func (ar *ApiRoute) GetParameters() []ApiRouteParameterEntry {
 	})
 
 	return result
+}
+
+func (ar *ApiRoute) hasRequestBody() bool {
+	return ar.RequestModel != "" || len(ar.RequestFiles) > 0 || ar.RawBody
+}
+
+func (ar *ApiRoute) requiresRequestBody() bool {
+	if ar.RequestBodyRequired != nil {
+		return *ar.RequestBodyRequired
+	}
+
+	return ar.RequestModel != "" || len(ar.RequestFiles) > 0
 }
 
 type ApiRouteEntry struct {
